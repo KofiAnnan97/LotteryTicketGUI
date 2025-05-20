@@ -26,3 +26,10 @@ Create a release version of the code to run
 ```
 cargo build --release
 ```
+
+### Testing
+#### Fake DB Interface
+A quick and dirty way to run all the tests sequentially is to use the following command.
+```bash 
+cargo test -- --test-threads 1
+```
