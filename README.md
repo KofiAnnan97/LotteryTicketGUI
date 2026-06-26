@@ -13,18 +13,10 @@ A simple GUI for generating lottery tickets. The purpose of this application is 
     - [ ] View previously generated tickets
 
 ## Quick Start
-### Setup
-- [GTK Dependencies](https://gtk-rs.org/gtk4-rs/stable/latest/book/installation.html)
-
 ### Deployment 
 Buidl and run code
 ```
 cargo run
-```
-
-Create a release version of the code to run
-```
-cargo build --release
 ```
 
 ### Testing

@@ -4,31 +4,31 @@ use std::vec;
 use std::time;
 use serde::{Deserialize, Serialize};
 use serde_json::{Result, Value, Error, json};
-use sqlx::types::Json;
 use std::fs::{File, write, read_to_string};
 use std::path::Path;
 use chrono::offset::Utc;
 use chrono::DateTime;
 
-static PRESET_PATH : &str = "./data/presets.json";
-static HISTORY_PATH : &str = "./data/ticket_history.json";
+use crate::utils::file_ops::{PRESET_PATH, HISTORY_PATH, 
+    create_data_dir, create_preset_json, create_ticket_json, get_preset_data, save_data};
+use crate::utils::convert::{get_date_str, get_time_str, convert_str_to_vec, convert_vec_to_str};
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct Ticket {
     ticket_id: u32,
-    pub preset_id: u32,
+    preset_id: u32,
     pub created_time : String,
     pub created_date : String,
     pub numbers: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-struct Presets {
-    default: String,
-    presets: Vec<TicketPreset>
-}
+// #[derive(Deserialize, Serialize, Debug)]
+// struct Presets {
+//     default: String,
+//     presets: Vec<TicketPreset>
+// }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct TicketPreset {
     preset_id: u32,
     pub name: String,
@@ -39,68 +39,21 @@ pub struct TicketPreset {
     pub modified_data: String,
 }
 
+impl TicketPreset {
+    pub fn new() -> TicketPreset {
+        TicketPreset { 
+            preset_id: 0, 
+            name: String::new(), 
+            limits: String::new(), 
+            created_time: String::new(), 
+            created_date: String::new(), 
+            modified_time: String::new(), 
+            modified_data: String::new() 
+        }
+    }
+}
+
 // Helper Functions
-
-fn get_date_str() -> String {
-    let now = SystemTime::now();
-    let dt: DateTime<Utc> = now.into();
-    dt.format("%d/%m/%Y").to_string()
-}
-
-fn get_time_str() -> String {
-    let now = SystemTime::now();
-    let dt: DateTime<Utc> = now.into();
-    dt.format("%T").to_string()
-}
-
-fn convert_vec_to_str(nums: Vec<i32>) -> String {
-    let mut temp : String = String::from("");
-    for n in 0..nums.len()-1{
-        temp += &format!("{},", nums[n].to_string());
-    }
-    temp += &nums[nums.len()-1].to_string();
-    temp
-}
-
-fn convert_str_to_vec(nums_str: &String) -> Vec<i32> {
-    let mut temp : Vec<i32> = Vec::new();
-    let segments = (&nums_str).split(",");
-    for part in segments{
-        match part.parse::<i32>(){
-            Ok(data) => temp.push(data),
-            Err(e) => eprintln!("Error: {}", e)
-        };
-    }
-    temp
-}
-
-fn create_data_dir() {
-    let data_dir = Path::new("./data");
-    if !Path::is_dir(data_dir){
-        let _ = fs::create_dir_all(data_dir);
-    }
-}
-
-fn create_ticket_json(path_str: &str) {
-    create_data_dir();
-    File::create_new(path_str).expect("Could not create ticket history storage.");
-    let setup = json!([]);
-    let setup_str = serde_json::to_string(&setup);
-    save_data(HISTORY_PATH.to_string(), setup_str.expect("Failed to initialize ticket history."));
-}
-
-fn create_preset_json(path_str: &str){
-    create_data_dir();
-    File::create_new(path_str).expect("Could not create preset storage.");
-    let setup = json!({"default":"","presets":[]});
-    let setup_str = serde_json::to_string(&setup).unwrap();
-    save_data(PRESET_PATH.to_string(), setup_str);
-}
-
-fn get_preset_data() -> Result<Value> {
-    let data = read_to_string(PRESET_PATH.to_string()).unwrap();
-    Ok(serde_json::from_str(&data)?)
-}
 
 fn is_preset_used(preset_id: u32) -> bool {
     let mut is_used : bool = false;
@@ -124,7 +77,7 @@ fn update_tickets_preset_id(curr_id: u32, new_id: u32) {
             for t in tickets.iter_mut() {
                 if t.preset_id == curr_id { t.preset_id = new_id; }
             }
-            let tickets_str = serde_json::to_string(&tickets).expect("Could not update ticket preset id");
+            let tickets_str = serde_json::to_string_pretty(&tickets).expect("Could not update ticket preset id");
             save_data(HISTORY_PATH.to_string(), tickets_str);
         },
         Err(e) => eprintln!("Error: {}", e)
@@ -135,15 +88,11 @@ fn update_presets_helper(presets: Vec<TicketPreset>) {
     match get_preset_data() {
         Ok(mut data) => {
             *data.get_mut("presets").unwrap() = json!(presets);
-            let data_str = serde_json::to_string(&data).expect("Could not update presets");
+            let data_str = serde_json::to_string_pretty(&data).expect("Could not update presets");
             save_data(PRESET_PATH.to_string(), data_str);
         },
         Err(e) => eprintln!("Error: {}", e)
     };
-}
-
-fn save_data(fp: String, data: String) {
-    write(fp, data).expect("Data could not be saved.");
 }
 
 // CREATE
@@ -162,13 +111,40 @@ pub fn add_ticket(p_id: u32, nums: Vec<i32>) -> Option<bool>{
                 created_time: get_time_str(),
                 numbers: nums_str
             });
-            let data = serde_json::to_string(&tickets).unwrap();
+            let data = serde_json::to_string_pretty(&tickets).unwrap();
             save_data(HISTORY_PATH.to_string(), data);
             return Ok::<bool, Error>(true).ok();
         },
-        Err(e) => eprintln!("Error: {}", e)
+        Err(_) => {
+            println!("Could not retrieve current ticket history");
+            return Ok::<bool, Error>(false).ok();
+        }
     }
-    None
+}
+
+pub fn bulk_add_tickets(new_tickets: &Vec<Ticket>) -> Option<bool> {
+    let path = Path::new(HISTORY_PATH);
+    if !path.is_file(){ create_ticket_json(HISTORY_PATH); }
+    match get_tickets(){
+        Ok(mut tickets) => {
+            for nt in new_tickets { 
+                tickets.push(Ticket { 
+                    ticket_id: nt.ticket_id, 
+                    preset_id: nt.preset_id, 
+                    created_time: nt.created_time.clone(), 
+                    created_date: nt.created_date.clone(), 
+                    numbers: nt.numbers.clone() 
+                });
+            }
+            let data = serde_json::to_string_pretty(&tickets).unwrap();
+            save_data(HISTORY_PATH.to_string(), data);
+            return Ok::<bool, Error>(true).ok();
+        },
+        Err(_) => {
+            println!("Could not retrieve current ticket history");
+            return Ok::<bool, Error>(false).ok();
+        }
+    }
 }
 
 pub fn add_preset( name: &str, limits: Vec<i32>) -> Option<bool>{
@@ -239,7 +215,7 @@ pub fn get_ticket(ticket_id: u32) -> Option<Ticket> {
 pub fn get_presets() -> Result<Vec<TicketPreset>> {
     let data = read_to_string(PRESET_PATH).unwrap();
     let body : Value = serde_json::from_str(&data).expect("Could not parse data while getting presets");
-    let presets = serde_json::to_string(&body["presets"]).unwrap();
+    let presets = serde_json::to_string_pretty(&body["presets"]).unwrap();
     serde_json::from_str::<Vec<TicketPreset>>(&presets)
 }
 
@@ -260,11 +236,10 @@ pub fn get_preset(preset_id: u32) -> Option<TicketPreset> {
 pub fn get_default() -> Option<String> {
     let data = read_to_string(PRESET_PATH).unwrap();
     let body : Value = serde_json::from_str(&data).expect("Could not parse data while getting default.");
-    //serde_json::to_string(&body["default"])
-    let default_str = serde_json::to_string(&body["default"]).unwrap().to_string();
+    //serde_json::to_string_pretty(&body["default"])
+    let default_str = serde_json::to_string_pretty(&body["default"]).unwrap().to_string();
     let d_str = default_str[1..default_str.len()-1].to_string();
-    return Ok::<String, Error>(d_str).ok();
-    
+    return Ok::<String, Error>(d_str).ok(); 
 }
 
 pub fn get_preset_id(preset_name: String) -> Option<u32> {
@@ -303,7 +278,7 @@ pub fn set_default_preset(name: String) {
     match get_preset_data() {
         Ok(mut data) => {
             *data.get_mut("default").unwrap() = json!(name);
-            let data_str = serde_json::to_string(&data).expect("Could not update default preset");
+            let data_str = serde_json::to_string_pretty(&data).expect("Could not update default preset");
             save_data(PRESET_PATH.to_string(), data_str);
         },
         Err(e) => eprintln!("Error: {}", e)
@@ -380,7 +355,7 @@ pub fn delete_ticket(ticket_id: u32) -> bool {
                     tickets[j].ticket_id = idx;
                     idx+=1;
                 }
-                let data_str = serde_json::to_string(&tickets).unwrap();
+                let data_str = serde_json::to_string_pretty(&tickets).unwrap();
                 save_data(HISTORY_PATH.to_string(), data_str);
                 is_ticket_deleted = true;
             }
@@ -409,7 +384,7 @@ pub fn delete_all_tickets_by_preset_id(preset_id: u32) {
                     tickets.remove(i);
                 }
             }*/
-            let data_str = serde_json::to_string(&new_tickets).unwrap();
+            let data_str = serde_json::to_string_pretty(&new_tickets).unwrap();
             save_data(HISTORY_PATH.to_string(), data_str);
             
         },
@@ -433,9 +408,10 @@ pub fn delete_preset(preset_id: u32) {
                 presets.remove(r_idx);
                 let mut idx: u32 = r_idx as u32;
                 for j in r_idx..presets.len() {
-                    println!("{} {}", presets[j].preset_id, idx);
+                    //println!("{} {}", presets[j].preset_id, idx);
                     // update all tickets with new preset id
                     update_tickets_preset_id(presets[j].preset_id, idx);
+                    set_default_preset(String::from(""));
                     // update preset with new id
                     presets[j].preset_id = idx;
                     idx += 1;
@@ -503,7 +479,7 @@ mod tests {
         // Clear Tickets
         if Path::new(HISTORY_PATH).is_file() {
             let empty_list = json!([]);
-            let empty_list_str = serde_json::to_string(&empty_list).unwrap();
+            let empty_list_str = serde_json::to_string_pretty(&empty_list).unwrap();
             save_data(HISTORY_PATH.to_string(), empty_list_str);
         }
         
@@ -513,7 +489,7 @@ mod tests {
                 Ok(mut data) => {
                     *data.get_mut("default").unwrap() = json!("");
                     *data.get_mut("presets").unwrap() = json!([]);
-                    let data_str = serde_json::to_string(&data).unwrap();
+                    let data_str = serde_json::to_string_pretty(&data).unwrap();
                     save_data(PRESET_PATH.to_string(), data_str);
                 }, 
                 Err(e) => eprintln!("Error: {}", e)
@@ -526,6 +502,49 @@ mod tests {
     fn add_presets_and_tickets_test() {
         clear();
         init();
+    }
+
+    #[test]
+    fn add_multiple_tickets_test(){
+        clear();
+        let preset_name = "TestLotto";
+        let limits = vec![30, 30, 30];
+        add_preset(preset_name, limits);
+        let tickets = vec![
+            Ticket{
+                ticket_id: 0,
+                preset_id: 0,
+                created_time : String::from("09:07:43"),
+                created_date : String::from("05/23/2025"),
+                numbers: String::from("12,14,29"),
+            },
+            Ticket{
+                ticket_id: 1,
+                preset_id: 0,
+                created_time : String::from("09:07:43"),
+                created_date : String::from("05/23/2025"),
+                numbers: String::from("13,15,30"),
+            },
+            Ticket{
+                ticket_id: 2,
+                preset_id: 0,
+                created_time : String::from("09:07:43"),
+                created_date : String::from("05/23/2025"),
+                numbers: String::from("14,16,1"),
+            }
+        ];
+        bulk_add_tickets(&tickets);
+        match get_tickets() {
+            Ok(curr_tickets) => {
+                for i in 0..curr_tickets.len() {
+                    assert_eq!(tickets[i].ticket_id, curr_tickets[i].ticket_id, 
+                               "Ticket id is not the same: {} != {}", tickets[i].ticket_id, curr_tickets[i].ticket_id);
+                    assert_eq!(tickets[i].numbers, curr_tickets[i].numbers, 
+                               "Ticket id is not the same: [{}] != [{}]", tickets[i].numbers, curr_tickets[i].numbers);
+                }
+            },
+            Err(_) => assert!(false, "Could not retrieve tickets.")
+        }
     }
 
     #[test]
@@ -544,12 +563,12 @@ mod tests {
                         if default_name == old_name {
                             set_default_preset(new_name.clone());
                         }
-                        assert_eq!(new_name, preset.name)
+                        assert_eq!(new_name, preset.name, "Preset not updated properly: {} != {}", new_name, preset.name)
                     },
-                    None => assert!(false)
+                    None => assert!(false, "Could not retrieve defualt value")
                 }
             },
-            None => assert!(false)
+            None => assert!(false, "Could not retrieve defualt value")
         }
     }
 
@@ -557,15 +576,16 @@ mod tests {
     fn update_preset_limits_test() {
         clear();
         init();
-        let new_limits = vec![10, 10, 10, 10, 10, 10];
-        match get_preset_id("DeleteMeHard".to_string()) {
+        let test_name = String::from("DeleteMeHard");
+        match get_preset_id(test_name.clone()) {
             Some(preset_id) => {
+                let new_limits = vec![10, 10, 10, 10, 10, 10];
                 match get_preset(preset_id) {
                     Some (preset) => {
                         let new_limits_str = convert_vec_to_str(new_limits.clone());
                         assert_ne!(new_limits_str, preset.limits);
                     },
-                    None => assert!(false)
+                    None => assert!(false, "Could not retrieve preset given id: {}", preset_id)
                 }
                 update_preset_limits(preset_id, new_limits.clone());
                 match get_preset(preset_id) {
@@ -573,10 +593,10 @@ mod tests {
                         let new_limits_str = convert_vec_to_str(new_limits);
                         assert_eq!(new_limits_str, preset.limits)
                     },
-                    None => assert!(false)
+                    None => assert!(false, "Could not retrieve preset given id: {}", preset_id)
                 }
             },
-            None => assert!(false)
+            None => assert!(false, "Could not retrieve preset id given name: {}", test_name)
         }
     }
 
@@ -590,7 +610,7 @@ mod tests {
         delete_ticket(0);
         let new_first_ticket = get_ticket(0).unwrap();
         println!("New First Ticket Entry: {:?}", new_first_ticket);
-        assert_ne!(first_nums, new_first_ticket.numbers);
+        assert_ne!(first_nums, new_first_ticket.numbers, "Ticket numbers are the same {} == {}",first_nums, new_first_ticket.numbers);
     }
 
     #[test]
@@ -608,9 +628,9 @@ mod tests {
                         break;
                     }
                 }
-                assert!(no_tickets_with_preset);
+                assert!(no_tickets_with_preset, "Some tickets are still associated to preset id: {}", deleted_id);
             },
-            Err(e) => assert!(false)
+            Err(_) => assert!(false, "Could not retrieve tickets")
         }
     }
 
@@ -629,9 +649,9 @@ mod tests {
                         break;
                     }
                 }
-                assert!(preset_exists);
+                assert!(preset_exists, "Preset \"{}\" does not exist", preset_name);
             },
-            Err(e) => assert!(false)
+            Err(_) => assert!(false, "Could not retrieve presets")
         }
         let deleted_id = get_preset_id(preset_name.to_string()).unwrap();
         delete_preset(deleted_id);
@@ -644,9 +664,9 @@ mod tests {
                         break;
                     }
                 }
-                assert!(preset_deleted);
+                assert!(preset_deleted, "Preset \"{}\" with id {} was not deleted", preset_name, deleted_id);
             },
-            Err(e) => assert!(false)
+            Err(_) => assert!(false, "Could not retrieve presets")
         }
     }
 
@@ -666,9 +686,9 @@ mod tests {
                         break;
                     }
                 }
-                assert!(not_deleted);
+                assert!(not_deleted, "Preset {} was deleted", preset_name);
             }, 
-            Err(e) => assert!(false)
+            Err(_) => assert!(false, "Could not retrieve presets")
         }
         /*delete_all_tickets_by_preset_id(deleted_id);
         match get_presets() {
@@ -693,9 +713,27 @@ mod tests {
         add_preset(preset_name, vec![99, 99, 99, 99, 99]);
         init();
         let preset_id = get_preset_id(preset_name.to_string()).unwrap();
-        assert_eq!(0, preset_id);
+        assert_eq!(0, preset_id, "First preset id is not 0: {} != 0", preset_id);
         delete_preset(preset_id);
         let test_lotto_id = get_preset_id("TestLotto".to_string()).unwrap();
-        assert_eq!(0, test_lotto_id);
+        assert_eq!(0, test_lotto_id, "The new first preset id is not 0: {} != 0",test_lotto_id);
+    }
+
+    #[test]
+    fn delete_default(){
+        clear();
+        init();
+        match get_default(){
+            Some(default_str) => {
+                let default_id = get_preset_id(default_str).unwrap();
+                delete_all_tickets_by_preset_id(default_id);
+                delete_preset(default_id);
+                match get_default(){
+                    Some(blank_str) => assert_eq!(String::from(""), blank_str),
+                    None => assert!(false, "Could not retrieve defualt value"),
+                }
+            },
+            None => assert!(false, "Could not retrieve defualt value"),
+        }
     }
 }
